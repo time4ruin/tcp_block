@@ -153,12 +153,12 @@ int main(int argc, char *argv[])
 	eth_new = (struct eth_header *)malloc(sizeof(struct eth_header) + 1);
 	ip_new = (struct libnet_ipv4_hdr *)malloc(sizeof(struct libnet_ipv4_hdr) + 1);
 	tcp_new = (struct libnet_tcp_hdr *)malloc(sizeof(struct libnet_tcp_hdr) + 1);
-	tcp_flags = (uint8_t *)malloc(sizeof(struct eth_header) + sizeof(struct libnet_ipv4_hdr) + sizeof(struct libnet_tcp_hdr) + 1);
+	tcp_flags = (uint8_t *)malloc(sizeof(struct eth_header) + sizeof(struct libnet_ipv4_hdr) + sizeof(struct libnet_tcp_hdr) + 8);
 
 	struct eth_header *eth = (struct eth_header *)malloc(sizeof(struct eth_header) + 1);
 	struct libnet_ipv4_hdr *ip = (struct libnet_ipv4_hdr *)malloc(sizeof(struct libnet_ipv4_hdr) + 1);
 	struct libnet_tcp_hdr *tcp = (struct libnet_tcp_hdr *)malloc(sizeof(struct libnet_tcp_hdr) + 1);
-	
+
 	if (argc != 2)
 	{
 		usage();
@@ -220,7 +220,8 @@ int main(int argc, char *argv[])
 			int Totallen = ntohs(ip->ip_len);
 			if (ip->ip_p == IPPROTO_TCP) //if TCP
 			{
-				printf("TCP %u bytes captured\n", header->caplen);fflush(stdout);
+				//printf("TCP %u bytes captured\n", header->caplen);
+				fflush(stdout);
 				p += IPlen;
 				tcp = (struct libnet_tcp_hdr *)p;
 				int TCPlen = tcp->th_off * 4;
@@ -248,9 +249,9 @@ int main(int argc, char *argv[])
 				else //if just TCP
 				{
 					//send tcp rst(forward)
-					send_tcp_flags(handle, TCP_FORWARD, TH_RST + TH_ACK, Datalen, eth, ip, tcp, my_mac);
+					//send_tcp_flags(handle, TCP_FORWARD, TH_RST + TH_ACK, Datalen, eth, ip, tcp, my_mac);
 					//send tcp rst(backward)
-					send_tcp_flags(handle, TCP_BACKWARD, TH_RST + TH_ACK, Datalen, eth, ip, tcp, my_mac);
+					//send_tcp_flags(handle, TCP_BACKWARD, TH_RST + TH_ACK, Datalen, eth, ip, tcp, my_mac);
 				}
 			}
 		}
@@ -270,89 +271,136 @@ int main(int argc, char *argv[])
 
 int send_tcp_flags(pcap_t *handle, int forward, uint8_t flags, int Datalen, struct eth_header *eth, struct libnet_ipv4_hdr *ip, struct libnet_tcp_hdr *tcp, uint8_t *my_mac)
 {
+	uint8_t *tcp_data = (uint8_t *)malloc(10);
+	memcpy(tcp_data, "blocked", 7);
+
 	eth_new->type = htons(ETHERTYPE_IP);
 	memcpy(eth_new->src_mac, my_mac, 6);
 
-	ip_new->ip_hl = 5;   //header length
-	ip_new->ip_v = 4;	//ip version
-	ip_new->ip_tos = 0;  //type of services
-	ip_new->ip_len = htons(40); //total length
+	ip_new->ip_hl = 5;  //header length
+	ip_new->ip_v = 4;   //ip version
+	ip_new->ip_tos = 0; //type of services
+	if (flags == TH_FIN + TH_ACK)
+	{												   //if FIN
+		ip_new->ip_len = htons(40 + sizeof(tcp_data)); //total length
+	}
+	else
+	{
+		ip_new->ip_len = htons(40); //total length
+	}
 	ip_new->ip_id = htons(0x30d5); //identification
-	ip_new->ip_off = 0; //fragment offset
-	ip_new->ip_ttl = 255; //time to live
-	ip_new->ip_p = IPPROTO_TCP; //protocol
-	ip_new->ip_sum = 0; //temporary checksum before calculation
+	ip_new->ip_off = 0;			   //fragment offset
+	ip_new->ip_ttl = 255;		   //time to live
+	ip_new->ip_p = IPPROTO_TCP;	//protocol
+	ip_new->ip_sum = 0;			   //temporary checksum before calculation
 	if (forward == TCP_FORWARD)
 	{
 		memcpy(eth_new->dst_mac, eth->dst_mac, 6);
 		ip_new->ip_src = ip->ip_src;
 		ip_new->ip_dst = ip->ip_dst;
-		tcp_new->th_sport = tcp->th_sport; //src port
-		tcp_new->th_dport = tcp->th_dport; //dst port
-		tcp_new->th_seq = tcp->th_seq + htonl(Datalen); //seq num
-		tcp_new->th_ack = tcp->th_ack; //ack num
+		tcp_new->th_sport = tcp->th_sport;				//src port
+		tcp_new->th_dport = tcp->th_dport;				//dst port
+		tcp_new->th_seq = ntohl(htonl(tcp->th_seq) + Datalen); //seq num
+		tcp_new->th_ack = tcp->th_ack;					//ack num
 	}
 	else if (forward == TCP_BACKWARD)
 	{
 		memcpy(eth_new->dst_mac, eth->src_mac, 6);
 		ip_new->ip_src = ip->ip_dst;
 		ip_new->ip_dst = ip->ip_src;
-		tcp_new->th_sport = tcp->th_dport; //src port
-		tcp_new->th_dport = tcp->th_sport; //dst port
-		tcp_new->th_seq = tcp->th_ack; //seq num
-		tcp_new->th_ack = tcp->th_seq + htonl(Datalen); //ack num
+		tcp_new->th_sport = tcp->th_dport;				//src port
+		tcp_new->th_dport = tcp->th_sport;				//dst port
+		tcp_new->th_seq = tcp->th_ack;					//seq num
+		tcp_new->th_ack = ntohl(htonl(tcp->th_seq) + Datalen); //ack num
 	}
-	tcp_new->th_off = 5;		//data offset(header length)
+	tcp_new->th_off = 5;	   //data offset(header length)
 	tcp_new->th_flags = flags; //control flags
-	tcp_new->th_win = 0; //window	
-	tcp_new->th_sum = 0; //temporary checksum before calculation
-	tcp_new->th_urp = 0; //urgent pointer
-	
+	tcp_new->th_win = 0;	   //window
+	tcp_new->th_sum = 0;	   //temporary checksum before calculation
+	tcp_new->th_urp = 0;	   //urgent pointer
+
 	//calculate IP checksum
-	uint16_t tmp_checksum = 0;
+	uint32_t tmp_checksum = 0;
+	uint16_t tmp16 = 0;
 	uint16_t *tmp = (uint16_t *)ip_new;
-	for (int i = 0; i < 10; i++){ //x10 16bit hex values
-		if (tmp_checksum + ntohs(tmp[i]) > 0xFFFF){
-			tmp_checksum += 1;
-		}
+	for (int i = 0; i < 10; i++)
+	{ //x10 16bit hex values
 		tmp_checksum += ntohs(tmp[i]);
 	}
-	ip_new->ip_sum = htons(tmp_checksum) ^ 0xFFFF;
+	if (tmp_checksum > 0xFFFF)
+	{
+		tmp16 = (tmp_checksum / 0x10000) + (tmp_checksum & 0xFFFF);
+	}
+	ip_new->ip_sum = htons(tmp16) ^ 0xFFFF;
+
 	//calculate TCP checksum
 	tmp_checksum = 0;
 	//pseudo header first
 	tmp = (uint16_t *)ip_new;
-	for (int i = 6; i < 10; i++){ //16bit hex values (src addr, dst addr)
-		if (tmp_checksum + ntohs(tmp[i]) > 0xFFFF){
-			tmp_checksum += 1;
-		}
+	for (int i = 6; i < 10; i++)
+	{ //16bit hex values (src addr, dst addr)
 		tmp_checksum += ntohs(tmp[i]);
 	}
-	if (tmp_checksum + IPPROTO_TCP > 0xFFFF){ //reserved, protocol
-		tmp_checksum += 1;
-	} tmp_checksum += IPPROTO_TCP;
-	if (tmp_checksum + 0x14 > 0xFFFF){ //TCP length: 20bytes
-		tmp_checksum += 1;
-	} tmp_checksum += 0x14;
+	tmp_checksum += IPPROTO_TCP;
+	if (flags == TH_FIN + TH_ACK) //if FIN
+	{
+		tmp_checksum += 20 + sizeof(tcp_data);
+	}
+	else //if RST
+	{
+		tmp_checksum += 20;
+	}
 	//tcp segment second
 	tmp = (uint16_t *)tcp_new;
-	for (int i = 0; i < 10; i++){ //x10 16bit hex values
-		if (tmp_checksum + ntohs(tmp[i]) > 0xFFFF){
-			tmp_checksum += 1;
-		}
+	for (int i = 0; i < 10; i++)
+	{ //x10 16bit hex values
 		tmp_checksum += ntohs(tmp[i]);
 	}
-	tcp_new->th_sum = htons(tmp_checksum) ^ 0xFFFF;
+	//tcp data third
+	if (flags == TH_FIN + TH_ACK) //if FIN
+	{
+		tmp = (uint16_t *)tcp_data;
+		int j = sizeof(tcp_data) / 2;
+		for (int i = 0; i < j; i++)
+		{
+			tmp_checksum += ntohs(tmp[i]);
+		}
+		if (sizeof(tcp_data) % 2 == 1)
+		{
+			tmp_checksum += ntohs(tcp_data[2 * j] << 8);
+		}
+	}
+	if (tmp_checksum > 0xFFFF)
+	{
+		tmp16 = (tmp_checksum / 0x10000) + (tmp_checksum & 0xFFFF);
+	}
+	tcp_new->th_sum = htons(tmp16) ^ 0xFFFF;
 
 	tcp_flags = (uint8_t *)eth_new;
 	memcpy(tcp_flags + sizeof(struct eth_header), ip_new, sizeof(struct libnet_ipv4_hdr));
 	memcpy(tcp_flags + sizeof(struct eth_header) + sizeof(struct libnet_ipv4_hdr), tcp_new, sizeof(struct libnet_tcp_hdr));
-	
-	if (pcap_inject(handle, tcp_flags, sizeof(struct eth_header) + sizeof(struct libnet_ipv4_hdr) + sizeof(struct libnet_tcp_hdr)) == -1)
-	{
-		fprintf(stderr, "\nError sending the packet: %s\n", pcap_geterr(handle));
-		return -1;
+	if (flags == TH_FIN + TH_ACK)
+	{ //FIN -> blocked message
+		memcpy(tcp_flags + sizeof(struct eth_header) + sizeof(struct libnet_ipv4_hdr) + sizeof(struct libnet_tcp_hdr), tcp_data, sizeof(tcp_data));
+		if (pcap_inject(handle, tcp_flags, sizeof(struct eth_header) + sizeof(struct libnet_ipv4_hdr) + sizeof(struct libnet_tcp_hdr) + sizeof(tcp_data)) == -1)
+		{
+			fprintf(stderr, "\nError sending the packet: %s\n", pcap_geterr(handle));
+			return -1;
+		}
 	}
-	printf("TCP RST/FIN sent\n"); fflush(stdout);
+	else
+	{
+		if (pcap_inject(handle, tcp_flags, sizeof(struct eth_header) + sizeof(struct libnet_ipv4_hdr) + sizeof(struct libnet_tcp_hdr)) == -1)
+		{
+			fprintf(stderr, "\nError sending the packet: %s\n", pcap_geterr(handle));
+			return -1;
+		}
+	}
+
+	if (flags == TH_FIN + TH_ACK){
+		printf("TCP FIN sent\n");
+	}
+	else printf("TCP RST sent\n");
+	fflush(stdout);
 	return 0;
 }
