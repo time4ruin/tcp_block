@@ -248,9 +248,9 @@ int main(int argc, char *argv[])
 				else //if just TCP
 				{
 					//send tcp rst(forward)
-					//send_tcp_flags(handle, TCP_FORWARD, TH_RST + TH_ACK, Datalen, eth, ip, tcp, my_mac);
+					send_tcp_flags(handle, TCP_FORWARD, TH_RST + TH_ACK, Datalen, eth, ip, tcp, my_mac);
 					//send tcp rst(backward)
-					//send_tcp_flags(handle, TCP_BACKWARD, TH_RST + TH_ACK, Datalen, eth, ip, tcp, my_mac);
+					send_tcp_flags(handle, TCP_BACKWARD, TH_RST + TH_ACK, Datalen, eth, ip, tcp, my_mac);
 				}
 			}
 		}
@@ -276,12 +276,12 @@ int send_tcp_flags(pcap_t *handle, int forward, uint8_t flags, int Datalen, stru
 	ip_new->ip_hl = 5;   //header length
 	ip_new->ip_v = 4;	//ip version
 	ip_new->ip_tos = 0;  //type of services
-	ip_new->ip_len = 40; //total length
+	ip_new->ip_len = htons(40); //total length
 	ip_new->ip_id = htons(0x30d5); //identification
 	ip_new->ip_off = 0; //fragment offset
 	ip_new->ip_ttl = 255; //time to live
 	ip_new->ip_p = IPPROTO_TCP; //protocol
-	ip_new->ip_sum = 0; //checksum
+	ip_new->ip_sum = 0; //temporary checksum before calculation
 	if (forward == TCP_FORWARD)
 	{
 		memcpy(eth_new->dst_mac, eth->dst_mac, 6);
@@ -304,13 +304,50 @@ int send_tcp_flags(pcap_t *handle, int forward, uint8_t flags, int Datalen, stru
 	}
 	tcp_new->th_off = 5;		//data offset(header length)
 	tcp_new->th_flags = flags; //control flags
-	tcp_new->th_win = 0; //window
-	tcp_new->th_sum = 0; //checksum
+	tcp_new->th_win = 0; //window	
+	tcp_new->th_sum = 0; //temporary checksum before calculation
 	tcp_new->th_urp = 0; //urgent pointer
+	
+	//calculate IP checksum
+	uint16_t tmp_checksum = 0;
+	uint16_t *tmp = (uint16_t *)ip_new;
+	for (int i = 0; i < 10; i++){ //x10 16bit hex values
+		if (tmp_checksum + ntohs(tmp[i]) > 0xFFFF){
+			tmp_checksum += 1;
+		}
+		tmp_checksum += ntohs(tmp[i]);
+	}
+	ip_new->ip_sum = htons(tmp_checksum) ^ 0xFFFF;
+	//calculate TCP checksum
+	tmp_checksum = 0;
+	//pseudo header first
+	tmp = (uint16_t *)ip_new;
+	for (int i = 6; i < 10; i++){ //16bit hex values (src addr, dst addr)
+		if (tmp_checksum + ntohs(tmp[i]) > 0xFFFF){
+			tmp_checksum += 1;
+		}
+		tmp_checksum += ntohs(tmp[i]);
+	}
+	if (tmp_checksum + IPPROTO_TCP > 0xFFFF){ //reserved, protocol
+		tmp_checksum += 1;
+	} tmp_checksum += IPPROTO_TCP;
+	if (tmp_checksum + 0x14 > 0xFFFF){ //TCP length: 20bytes
+		tmp_checksum += 1;
+	} tmp_checksum += 0x14;
+	//tcp segment second
+	tmp = (uint16_t *)tcp_new;
+	for (int i = 0; i < 10; i++){ //x10 16bit hex values
+		if (tmp_checksum + ntohs(tmp[i]) > 0xFFFF){
+			tmp_checksum += 1;
+		}
+		tmp_checksum += ntohs(tmp[i]);
+	}
+	tcp_new->th_sum = htons(tmp_checksum) ^ 0xFFFF;
+
 	tcp_flags = (uint8_t *)eth_new;
 	memcpy(tcp_flags + sizeof(struct eth_header), ip_new, sizeof(struct libnet_ipv4_hdr));
 	memcpy(tcp_flags + sizeof(struct eth_header) + sizeof(struct libnet_ipv4_hdr), tcp_new, sizeof(struct libnet_tcp_hdr));
-
+	
 	if (pcap_inject(handle, tcp_flags, sizeof(struct eth_header) + sizeof(struct libnet_ipv4_hdr) + sizeof(struct libnet_tcp_hdr)) == -1)
 	{
 		fprintf(stderr, "\nError sending the packet: %s\n", pcap_geterr(handle));
